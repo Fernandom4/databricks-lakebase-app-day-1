@@ -197,6 +197,33 @@ def add_to_watchlist():
     return jsonify({"symbol": symbol, "email": email, "latest_price": price})
 
 
+@app.route("/watchlist", methods=["DELETE"])
+def delete_from_watchlist():
+    """
+    Remove a symbol from the current user's watchlist.
+    """
+    ensure_watchlist_table()
+
+    if request.is_json:
+        symbol = request.json.get("symbol", "")
+    else:
+        symbol = request.form.get("symbol", "")
+
+    symbol = symbol.strip().upper() if isinstance(symbol, str) else ""
+
+    if not symbol:
+        return jsonify({"error": "Symbol is required"}), 400
+
+    email = _current_user_email()
+
+    lakebase.run_write(
+        f"DELETE FROM {WATCHLIST_TABLE_NAME} WHERE symbol = %s AND email = %s",
+        (symbol, email),
+    )
+
+    return jsonify({"symbol": symbol, "message": "Removed from watchlist"})
+
+
 def _extract_latest_price(data: dict) -> float | None:
     """Pull the trade price out of the Massive 'previous close' response shape.
 

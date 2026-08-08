@@ -198,6 +198,35 @@
       font-size: 13px;
     }
 
+    .delete-btn {
+      padding: 6px 12px;
+      font-size: 12px;
+      font-weight: 500;
+      color: #721c24;
+      background: transparent;
+      border: 1px solid #f5c6cb;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      margin: 0;
+    }
+
+    .delete-btn:hover {
+      background: #f8d7da;
+      border-color: #f5c6cb;
+      transform: translateY(0);
+      box-shadow: none;
+    }
+
+    .delete-btn:active {
+      background: #f5c6cb;
+    }
+
+    td:last-child {
+      text-align: center;
+      width: 100px;
+    }
+
     @media (max-width: 768px) {
       body {
         padding: 20px 16px;
@@ -272,7 +301,7 @@
             ? "$" + Number(row.latest_price).toFixed(2)
             : "-";
           const updated = row.updated_at ? new Date(row.updated_at).toLocaleString() : "-";
-          tr.innerHTML = `<td>${row.symbol}</td><td>${row.email || "-"}</td><td>${price}</td><td>${updated}</td>`;
+          tr.innerHTML = `<td>${row.symbol}</td><td>${row.email || "-"}</td><td>${price}</td><td>${updated}</td><td><button class="delete-btn" onclick="deleteFromWatchlist('${row.symbol}')">Remove</button></td>`;
           watchlistBody.appendChild(tr);
         });
       } catch (err) {
@@ -308,6 +337,35 @@
         resultEl.textContent = "Request failed: " + err;
       }
     });
+
+    async function deleteFromWatchlist(symbol) {
+      if (!confirm(`Remove ${symbol} from your watchlist?`)) {
+        return;
+      }
+
+      resultEl.className = "";
+      resultEl.textContent = "Removing from watchlist...";
+
+      try {
+        const resp = await fetch("/watchlist", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ symbol }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          resultEl.className = "error";
+          resultEl.textContent = "Error: " + (data.error || resp.statusText);
+          return;
+        }
+        resultEl.className = "success";
+        resultEl.textContent = "Successfully removed " + symbol + " from watchlist";
+        loadWatchlist();
+      } catch (err) {
+        resultEl.className = "error";
+        resultEl.textContent = "Request failed: " + err;
+      }
+    }
 
     loadWatchlist();
   </script>

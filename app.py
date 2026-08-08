@@ -28,6 +28,7 @@ _w = WorkspaceClient()
 
 TABLE_NAME = os.environ.get("MASSIVE_TABLE_NAME", "massive_records")
 WATCHLIST_TABLE_NAME = os.environ.get("WATCHLIST_TABLE_NAME", "watchlist")
+TICKER_NEWS_TABLE_NAME = os.environ.get("TICKER_NEWS_TABLE_NAME", "ticker_news")
 
 # Basic stock ticker shape check: 1-10 uppercase letters, with an optional
 # ".X" or ".XX" share-class suffix (e.g. "BRK.B"). This rejects obviously
@@ -58,6 +59,27 @@ def ensure_watchlist_table():
             latest_price NUMERIC,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             PRIMARY KEY (symbol, email)
+        )
+        """
+    )
+
+
+def ensure_ticker_news_table():
+    """Create the ticker news table in Lakebase if it doesn't exist yet."""
+    lakebase.run_write(
+        f"""
+        CREATE TABLE IF NOT EXISTS {TICKER_NEWS_TABLE_NAME} (
+            id TEXT PRIMARY KEY,
+            symbol TEXT NOT NULL,
+            title TEXT,
+            author TEXT,
+            published_utc TIMESTAMPTZ,
+            article_url TEXT,
+            image_url TEXT,
+            description TEXT,
+            publisher_name TEXT,
+            publisher_url TEXT,
+            fetched_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )
         """
     )
@@ -222,6 +244,90 @@ def delete_from_watchlist():
     )
 
     return jsonify({"symbol": symbol, "message": "Removed from watchlist"})
+
+
+@app.route("/watchlist/<symbol>/news", methods=["GET"])
+def get_ticker_news(symbol: str):
+    """
+    Fetch recent news for a ticker symbol from the Massive API and store it
+    in Lakebase. Returns the news articles for the requested symbol.
+    """
+    ensure_ticker_news_table()
+
+    symbol = symbol.strip().upper() if isinstance(symbol, str) else ""
+
+    if not symbol or not _TICKER_RE.match(symbol):
+        return jsonify({"error": f"Invalid ticker symbol: {symbol!r}"}), 400
+
+    # Check if user has this symbol in their watchlist
+    email = _current_user_email()
+    watchlist_rows = lakebase.run_query(
+        f"SELECT 1 FROM {WATCHLIST_TABLE_NAME} WHERE symbol = %s AND email = %s",
+        (symbol, email),
+    )
+    if not watchlist_rows:
+        return jsonify({"error": f"Symbol {symbol} not in your watchlist"}), 403
+
+    client = MassiveClient()
+    try:
+        limit = int(request.args.get("limit", 10))
+        data = client.get_ticker_news(symbol, limit=limit)
+    except requests.HTTPError as e:
+        return jsonify({"error": f"Failed to fetch news for {symbol}: {str(e)}"}), 400
+
+    # Store news in the database
+    results = data.get("results", [])
+    stored_count = 0
+    import json as _json
+
+    for article in results:
+        article_id = article.get("id") or article.get("article_url", "")
+        if not article_id:
+            continue
+
+        lakebase.run_write(
+            f"""
+            INSERT INTO {TICKER_NEWS_TABLE_NAME} 
+                (id, symbol, title, author, published_utc, article_url, 
+                 image_url, description, publisher_name, publisher_url, fetched_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+            ON CONFLICT (id) DO UPDATE
+                SET fetched_at = EXCLUDED.fetched_at
+            """,
+            (
+                article_id,
+                symbol,
+                article.get("title"),
+                article.get("author"),
+                article.get("published_utc"),
+                article.get("article_url"),
+                article.get("image_url"),
+                article.get("description"),
+                article.get("publisher", {}).get("name") if isinstance(article.get("publisher"), dict) else None,
+                article.get("publisher", {}).get("homepage_url") if isinstance(article.get("publisher"), dict) else None,
+            ),
+        )
+        stored_count += 1
+
+    # Return news from database
+    news_rows = lakebase.run_query(
+        f"""
+        SELECT id, symbol, title, author, published_utc, article_url, 
+               image_url, description, publisher_name, publisher_url, fetched_at
+        FROM {TICKER_NEWS_TABLE_NAME}
+        WHERE symbol = %s
+        ORDER BY published_utc DESC
+        LIMIT %s
+        """,
+        (symbol, limit),
+    )
+
+    return jsonify({
+        "symbol": symbol,
+        "count": len(news_rows),
+        "stored": stored_count,
+        "news": news_rows
+    })
 
 
 def _extract_latest_price(data: dict) -> float | None:
